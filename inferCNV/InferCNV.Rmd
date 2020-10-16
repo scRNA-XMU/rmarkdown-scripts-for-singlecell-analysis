@@ -1,0 +1,172 @@
+---
+title: "InverCNV使用范例"
+output: html_document
+---
+
+<style>
+pre {
+  overflow-x: auto;
+}
+pre code {
+  word-wrap: normal;
+  white-space: pre;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message=FALSE,warning=FALSE)
+```
+
+## 软件安装
+
+安装此软件，需要下面几步。首先安装jags
+
+```{bash echo=TRUE,eval=FALSE}
+# ubuntu 16.04
+apt-get install jags
+```
+
+然后进入R，输入下面的命令
+
+```{bash echo=TRUE,eval=FALSE}
+install.packages("rjags")
+BiocManager::install("infercnv")
+```
+
+## 数据介绍
+
+采用的数据来自肺癌，文章出处[Therapy-Induced Evolution of Human Lung Cancer Revealed by Single-Cell RNA Sequencing](https://doi.org/10.1016/j.cell.2020.07.017)，这批数据的处理过程，可参考github：https://github.com/czbiohub/scell_lung_adenocarcinoma。
+
+
+## 运行InferCNV
+
+
+```{r eval=FALSE}
+library(infercnv)
+DataDir='/mnt/Ocean/Shared/121.192.179.208/single_cell_platform/lungcancer_rmarkdown_data/inferCNV_object_nodups'
+infercnv_obj = CreateInfercnvObject(raw_counts_matrix = paste(DataDir,"NI03_CNV_data_out_all_cells_raw_counts_largefile.txt",sep="/"), 
+                                    annotations_file =  paste(DataDir,"NI03_CNV_cell_metadata_shuffle_largefile.txt",sep="/"),
+                                    gene_order_file = paste(DataDir,"NI03_CNV_hg19_genes_ordered_correct_noXY.txt",sep="/"), 
+                                    ref_group_names = c("endothelial_normal", "fibroblast_normal"), 
+                                    delim = "\t")
+```
+
+首先，`raw_count_matrix`输入的是表达谱，可以直接从Seurat Object的表达谱中拿到。`annotations_file`记录细胞类型，表示细胞分群的信息，这部分信息通过各种细胞注释的方法可以搞定。`gene_order_file`记录各个基因在染色体上的位置区间。`ref_group_name`表示哪几类细胞为Normal，作为计算CNV的基准。
+
+```{r eval=FALSE}
+slot(infercnv_obj, "gene_order")[,"chr"] <- factor(slot(infercnv_obj, "gene_order")[,"chr"], levels = paste("chr",c(1:22),sep=""))
+infercnv_all = infercnv::run(infercnv_obj,
+                             cutoff=1,  # use 1 for smart-seq, 0.1 for 10x-genomics
+                             out_dir= paste(DataDir,"results",sep="/"),  # dir is auto-created for storing outputs
+                             cluster_by_groups=F,   # cluster
+                             hclust_method="ward.D2", plot_steps=F)
+```
+
+上面的命令，花了一夜的时间才终于跑完。跑完后，得到的文件如下：
+
+```
+├── 01_incoming_data.infercnv_obj
+├── 02_reduced_by_cutoff.infercnv_obj
+├── 03_normalized_by_depth.infercnv_obj
+├── 04_logtransformed.infercnv_obj
+├── 08_remove_ref_avg_from_obs_logFC.infercnv_obj
+├── 09_apply_max_centered_expr_threshold.infercnv_obj
+├── 10_smoothed_by_chr.infercnv_obj
+├── 11_recentered_cells_by_chr.infercnv_obj
+├── 12_remove_ref_avg_from_obs_adjust.infercnv_obj
+├── 14_invert_log_transform.infercnv_obj
+├── 15_no_subclustering.infercnv_obj
+├── expr.infercnv.dat
+├── expr.infercnv.preliminary.dat
+├── General_HCL_1_members.txt
+├── infercnv.heatmap_thresholds.txt
+├── infercnv.observation_groupings.txt
+├── infercnv.observations_dendrogram.txt
+├── infercnv.observations.txt
+├── infercnv.png
+├── infercnv.preliminary.heatmap_thresholds.txt
+├── infercnv.preliminary.observation_groupings.txt
+├── infercnv.preliminary.observations_dendrogram.txt
+├── infercnv.preliminary.observations.txt
+├── infercnv.preliminary.png
+├── infercnv.preliminary.references.txt
+├── infercnv.references.txt
+├── preliminary.infercnv_obj
+└── run.final.infercnv_obj
+```
+
+全基因组CNV展示图为`infercnv.png`，展示如下：
+
+```{r eval=TRUE,echo=FALSE}
+#library("knitr")
+#library("DT")
+#library(xtable)
+#(kableExtra)
+#library(highlightHTML)
+DataDir='/mnt/Ocean/Shared/121.192.179.208/single_cell_platform/lungcancer_rmarkdown_data/inferCNV_object_nodups'
+knitr::include_graphics(paste(DataDir,"results/infercnv.png",sep="/"))
+
+```
+
+接下来，根据`infercnv.observations_dendrogram.txt`对细胞聚类的结果，绘制聚类图：
+
+```{r eval=TRUE}
+library(phylogram)
+library(dendextend)
+library(ggthemes)
+#  Import inferCNV dendrogram
+DataDir='/mnt/Ocean/Shared/121.192.179.208/single_cell_platform/lungcancer_rmarkdown_data/inferCNV_object_nodups'
+infercnv.dend <- read.dendrogram(file = paste(DataDir,"results.real/infercnv.observations_dendrogram.txt",sep="/"))
+
+# Cut tree 
+infercnv.labels <- dendextend::cutree(infercnv.dend,k = 6, order_clusters_as_data = FALSE)
+# infercnv.labels <- cutree(infercnv.dend,h = 500, order_clusters_as_data = FALSE)
+# Color labels
+the_bars <- as.data.frame(ggthemes::tableau_color_pal("Tableau 20")(20)[infercnv.labels])
+colnames(the_bars) <- "inferCNV_tree"
+the_bars$inferCNV_tree <- as.character(the_bars$inferCNV_tree)
+
+# PLot tree
+infercnv.dend %>% set("labels",rep("", nobs(infercnv.dend)) )  %>% plot(main="inferCNV dendrogram") %>%
+colored_bars(colors = as.data.frame(the_bars), dend = infercnv.dend, sort_by_labels_order = FALSE, add = T, y_scale=1000, y_shift = 0)
+```
+
+Add CNV dendrogram clusters labels to annoation
+```{r eval=FALSE}
+inferCNV.annotation <- readr::read_tsv(file = paste(DataDir,"NI03_CNV_cell_metadata_shuffle_largefile.txt",sep="/"), col_names = c("V1", "V2"))
+table(inferCNV.annotation$V2)
+# Add labels
+inferCNV.annotation$inferCNV.class <- 0
+for(i in 1:length(infercnv.labels)){
+  inferCNV.annotation[inferCNV.annotation$V1 %in%  names(infercnv.labels)[i],"inferCNV.class"] <- infercnv.labels[i]
+}
+# Remove normal cells 
+inferCNV.annotation.malignant <- inferCNV.annotation[-grep("normal", inferCNV.annotation$V2),] 
+
+table(inferCNV.annotation.malignant$V2, inferCNV.annotation.malignant$inferCNV.class)
+
+```
+
+Classify each cell as tumor or nontumor based on CNV dendrogram cluster
+```{r echo=FALSE,eval=FALSE}
+#replace inferCNV.class 1 as "tumor"
+inferCNV.annotation.malignant$inferCNV.class <- gsub(pattern = 1, replacement = "tumor", x = inferCNV.annotation.malignant$inferCNV.class)
+#replace inferCNV.class 2 as "nontumor"
+inferCNV.annotation.malignant$inferCNV.class <- gsub(pattern = 2, replacement = "nontumor", x = inferCNV.annotation.malignant$inferCNV.class)
+#replace inferCNV.class 3 as "tumor"
+inferCNV.annotation.malignant$inferCNV.class <- gsub(pattern = 3, replacement = "tumor", x = inferCNV.annotation.malignant$inferCNV.class)
+#replace inferCNV.class 4 as "tumor"
+inferCNV.annotation.malignant$inferCNV.class <- gsub(pattern = 4, replacement = "tumor", x = inferCNV.annotation.malignant$inferCNV.class)
+#replace inferCNV.class 5 as "tumor"
+inferCNV.annotation.malignant$inferCNV.class <- gsub(pattern = 5, replacement = "tumor", x = inferCNV.annotation.malignant$inferCNV.class)
+#replace inferCNV.class 6 as "tumor"
+inferCNV.annotation.malignant$inferCNV.class <- gsub(pattern = 6, replacement = "tumor", x = inferCNV.annotation.malignant$inferCNV.class)
+#update colnames of inferCNV.annotation.malignant 
+colnames(inferCNV.annotation.malignant) <- c("cell_id", "Epithelial_cluster", "inferCNV_annotation")
+
+table(inferCNV.annotation.malignant$inferCNV_annotation)
+
+# Write updated cell annotation 
+#write.csv(inferCNV.annotation.malignant, file = "/myVolume/inferCNV_object_nodups/inferCNV_annotation.csv")
+```
